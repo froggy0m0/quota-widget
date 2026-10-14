@@ -218,7 +218,10 @@ class DeerWidget:
     def _render(self) -> None:
         self.root.update_idletasks()
         color, gray = self.images[self.style]
-        frame = render_frame(color, gray, self.size, self.usage, self.healthy, self.value_font)
+        frame = render_frame(
+            color, gray, self.size, self.usage, self.healthy, self.value_font,
+            missing_text="—" if self.provider == "claude" else "--",
+        )
         self.surface.present(frame)
 
     def _drag_start(self, event: tk.Event) -> None:
@@ -247,6 +250,8 @@ class DeerWidget:
                 self.healthy = True
                 self.error = ""
             else:
+                if self.provider == "claude":
+                    self.usage = None
                 self.healthy = False
                 self.error = str(value)
             self._render()
@@ -280,7 +285,10 @@ def probe(codex_path: str | None, provider: str = "codex") -> int:
             except queue.Empty:
                 continue
             if kind == "usage":
-                print(f"PASS: read the 300-minute {PROVIDERS[provider]} quota without a model request.")
+                if provider == "claude":
+                    print(f"PASS: local Claude usage cache, displayed usage {float(_value):.0f}%.")
+                else:
+                    print("PASS: read the 300-minute Codex quota without a model request.")
                 return 0
             raise RuntimeError(str(_value))
         raise TimeoutError("Probe timed out.")
@@ -293,7 +301,7 @@ def probe(codex_path: str | None, provider: str = "codex") -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Small Codex 5-hour quota deer widget")
+    parser = argparse.ArgumentParser(description="Codex / Claude 5-hour quota deer widget")
     parser.add_argument("--codex-path")
     parser.add_argument("--provider", choices=tuple(PROVIDERS))
     parser.add_argument("--settings-path")

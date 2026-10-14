@@ -13,6 +13,7 @@ New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 if (Test-Path -LiteralPath $appOutput) { Remove-Item -LiteralPath $appOutput -Recurse -Force }
 foreach ($directory in @('src','scripts')) { Copy-Item (Join-Path $root $directory) -Destination $buildRoot -Recurse -Force }
+Copy-Item (Join-Path $root 'requirements.txt') -Destination $buildRoot -Force
 Copy-Item (Join-Path $root 'assets') -Destination $buildRoot -Recurse -Force
 Copy-Item (Join-Path $root 'tests') -Destination $buildRoot -Recurse -Force
 Copy-Item (Join-Path $root 'README.md') -Destination $buildRoot -Force

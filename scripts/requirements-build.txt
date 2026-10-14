@@ -1,2 +1,2 @@
-Pillow>=11,<13
+-r ../requirements.txt
 PyInstaller>=6,<7

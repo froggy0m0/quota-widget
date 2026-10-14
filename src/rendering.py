@@ -10,6 +10,8 @@ def render_frame(
     usage: float | None,
     healthy: bool,
     font: ImageFont.FreeTypeFont,
+    *,
+    missing_text: str = "--",
 ) -> Image.Image:
     """Compose on transparent RGBA, so translucent pixels never mix with a key color."""
     frame = Image.new("RGBA", (size, size))
@@ -27,7 +29,7 @@ def render_frame(
             filled = scaled.crop((0, gauge - fill_height, gauge, gauge))
             frame.alpha_composite(filled, (image_x, image_y + gauge - fill_height))
 
-    value_text = f"{usage:.0f}%" if usage is not None else "--"
+    value_text = f"{usage:.0f}%" if usage is not None else missing_text
     label_width = round(font.getlength(value_text)) + 10
     label = Image.new("RGBA", (label_width, 24))
     ImageDraw.Draw(label).rounded_rectangle(

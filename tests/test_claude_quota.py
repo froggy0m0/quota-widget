@@ -3,89 +3,88 @@ from pathlib import Path
 import queue
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
-import urllib.error
+from unittest.mock import patch
 
-from claude_quota import (ClaudeQuotaClient, RateLimited, get_five_hour_usage,
-                          read_access_token, request_usage)
+from claude_quota import ClaudeQuotaClient, get_five_hour_usage, read_usage, usage_path
 
 
 class ClaudeUsageTests(unittest.TestCase):
-    def test_reads_five_hour_used_percent_without_converting_to_remaining(self):
-        for value in (0, 37.5, 100):
-            self.assertEqual(get_five_hour_usage({
-                "five_hour": {"utilization": value, "resets_at": "2026-10-14T10:00:00Z"},
-                "seven_day": {"utilization": 88},
-            }), value)
+    def test_percentage_is_rounded_used_usage_and_reset_boundary_is_strict(self):
+        for used in (0, 14.4, 14.6, 42.5, 43.5, 100):
+            with self.subTest(used=used):
+                record = {"used_percentage": used, "resets_at": 2000}
+                self.assertEqual(get_five_hour_usage(record, now=1000), round(used))
+                self.assertEqual(get_five_hour_usage(record, now=2000), round(used))
+                self.assertEqual(get_five_hour_usage(record, now=2001), 0)
 
-    def test_rejects_missing_and_invalid_five_hour_usage(self):
-        for value in (None, True, "42", -1, 101, float("nan"), float("inf")):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                get_five_hour_usage({"five_hour": {"utilization": value}})
-        for response in ({}, {"five_hour": None}, {"seven_day": {"utilization": 20}}):
-            with self.assertRaises(ValueError):
-                get_five_hour_usage(response)
+    def test_invalid_records_are_errors_even_after_the_reset(self):
+        records = [None, [], {}, {"used_percentage": 43}, {"resets_at": 2000}]
+        for invalid in (None, True, "42", -1, 101, float("nan"), float("inf")):
+            records.append({"used_percentage": invalid, "resets_at": 1})
+        for invalid in (None, True, "2000", float("nan"), float("inf")):
+            records.append({"used_percentage": 43, "resets_at": invalid})
+        for record in records:
+            with self.subTest(record=record), self.assertRaises(ValueError):
+                get_five_hour_usage(record, now=1000)
 
-    def test_existing_claude_login_is_read_without_modifying_credentials(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / ".credentials.json"
-            document = json.dumps({"claudeAiOauth": {"accessToken": "fake-test-token"}})
-            path.write_text(document)
-            self.assertEqual(read_access_token(path), "fake-test-token")
-            self.assertEqual(path.read_text(), document)
+    def test_home_path_is_used_and_cache_is_read_without_modification(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "claude_quota.Path.home", return_value=Path(directory)
+        ), patch("claude_quota.time.time", return_value=1000):
+            path = Path(directory) / ".claude" / "usage-widget" / "usage.json"
+            self.assertEqual(usage_path(), path)
+            path.parent.mkdir(parents=True)
+            payload = '{"used_percentage": 43.4, "resets_at": 2000}'
+            path.write_text(payload, encoding="utf-8")
+            before = path.stat().st_mtime_ns
+            self.assertEqual(read_usage(), 43)
+            self.assertEqual(path.read_text(encoding="utf-8"), payload)
+            self.assertEqual(path.stat().st_mtime_ns, before)
 
-    def test_expired_or_api_key_login_does_not_become_a_subscription_token(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / ".credentials.json"
-            for document in ({"apiKey": "fake-test-key"},
-                             {"claudeAiOauth": {"accessToken": "fake-test-token", "expiresAt": 1}}):
-                path.write_text(json.dumps(document))
+    def test_missing_unreadable_or_malformed_file_is_an_error(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "claude_quota.Path.home", return_value=Path(directory)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "^Claude 연결 안됨$"):
+                read_usage()
+            path = usage_path()
+            path.parent.mkdir(parents=True)
+            for payload in (b'{', b'\xff', b'null'):
+                path.write_bytes(payload)
+                with self.assertRaisesRegex(RuntimeError, "^Claude 연결 안됨$"):
+                    read_usage()
+            with patch("claude_quota.Path.read_text", side_effect=PermissionError):
                 with self.assertRaises(RuntimeError):
-                    read_access_token(path)
+                    read_usage()
 
-    @patch("claude_quota.urllib.request.build_opener")
-    def test_only_usage_get_is_sent_and_response_is_parsed(self, build_opener):
-        response = MagicMock()
-        response.read.return_value = b'{"five_hour":{"utilization":37.5}}'
-        build_opener.return_value.open.return_value.__enter__.return_value = response
-        self.assertEqual(request_usage("fake-test-token"), 37.5)
-        request = build_opener.return_value.open.call_args.args[0]
-        self.assertEqual(request.full_url, "https://api.anthropic.com/api/oauth/usage")
-        self.assertEqual(request.get_method(), "GET")
-        self.assertEqual(request.get_header("Anthropic-beta"), "oauth-2025-04-20")
-        self.assertEqual(request.get_header("Authorization"), "Bearer fake-test-token")
-        self.assertIsNone(request.data)
-
-    @patch("claude_quota.urllib.request.build_opener")
-    def test_rate_limit_backoff_and_authentication_errors_are_sanitized(self, build_opener):
-        build_opener.return_value.open.side_effect = urllib.error.HTTPError(
-            "https://api.anthropic.com/api/oauth/usage", 429, "secret response", {"Retry-After": "180"}, None
-        )
-        with self.assertRaises(RateLimited) as raised:
-            request_usage("fake-test-token")
-        self.assertEqual(raised.exception.retry_seconds, 180)
-        build_opener.return_value.open.side_effect = urllib.error.HTTPError(
-            "https://api.anthropic.com/api/oauth/usage", 401, "secret response", {}, None
-        )
-        with self.assertRaises(RuntimeError) as raised:
-            request_usage("fake-test-token")
-        self.assertNotIn("secret", str(raised.exception))
-        self.assertNotIn("fake-test-token", str(raised.exception))
-
-    def test_not_installed_publishes_help_without_a_network_or_model_request(self):
-        with tempfile.TemporaryDirectory() as directory:
+    def test_polling_recovers_after_cache_disappears_and_stops_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "claude_quota.Path.home", return_value=Path(directory)
+        ), patch("claude_quota.time.time", return_value=1000):
+            path = usage_path()
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"used_percentage": 43, "resets_at": 2000}))
             events = queue.Queue()
-            with patch("claude_quota.credentials_path", return_value=Path(directory) / "missing.json"), \
-                 patch("claude_quota.request_usage") as fetch:
-                client = ClaudeQuotaClient(events)
+            client = ClaudeQuotaClient(events)
+
+            def next_read(seconds):
+                self.assertEqual(seconds, 60)
+                if not path.exists():
+                    path.write_text(json.dumps({"used_percentage": 17.6, "resets_at": 2000}))
+                else:
+                    path.unlink()
+                return real_wait(0.02)
+
+            real_wait = client._stop.wait
+            with patch.object(client._stop, "wait", side_effect=next_read):
                 client.start()
                 try:
-                    kind, message = events.get(timeout=2)
-                    self.assertEqual(kind, "error")
-                    self.assertIn("Claude Code", message)
-                    fetch.assert_not_called()
+                    self.assertEqual(events.get(timeout=2), ("usage", 43.0))
+                    self.assertEqual(events.get(timeout=2)[0], "error")
+                    self.assertEqual(events.get(timeout=2), ("usage", 18.0))
                 finally:
                     client.close()
+                self.assertFalse(client._thread.is_alive())
 
 
 if __name__ == "__main__":

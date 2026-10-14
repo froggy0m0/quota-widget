@@ -58,6 +58,46 @@ class ProviderSwitchTests(unittest.TestCase):
             self.assertEqual(widget.style, "antlers")
             self.assertEqual(widget.size, 160)
 
+    def test_claude_file_error_clears_old_value_then_recovers(self):
+        widget = self.make_widget()
+        widget.provider = "claude"
+        widget.started = 0
+        widget.args.close_after_seconds = 0
+        widget.events.put(("error", "cache missing"))
+        widget._tick()
+        self.assertIsNone(widget.usage)
+        self.assertFalse(widget.healthy)
+        widget.events.put(("usage", 18.0))
+        widget._tick()
+        self.assertEqual(widget.usage, 18)
+        self.assertTrue(widget.healthy)
+        self.assertEqual(widget.error, "")
+
+    def test_codex_error_preserves_last_value(self):
+        widget = self.make_widget()
+        widget.started = 0
+        widget.args.close_after_seconds = 0
+        widget.events.put(("error", "connection failed"))
+        widget._tick()
+        self.assertEqual(widget.usage, 80)
+        self.assertFalse(widget.healthy)
+
+    @patch("main.find_codex", return_value="codex.exe")
+    @patch("main.QuotaClient")
+    def test_switch_back_to_codex_detaches_claude_queue(self, codex, find):
+        widget = self.make_widget()
+        widget.provider = "claude"
+        old_client = widget.client
+        old_events = widget.events
+        with tempfile.TemporaryDirectory() as directory:
+            widget.settings_path = Path(directory) / "settings.json"
+            widget._select_provider("codex")
+        old_client.close.assert_called_once()
+        self.assertIsNot(widget.events, old_events)
+        codex.assert_called_once_with("codex.exe", widget.events)
+        codex.return_value.start.assert_called_once()
+        self.assertIsNone(widget.usage)
+
 
 if __name__ == "__main__":
     unittest.main()
