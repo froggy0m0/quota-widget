@@ -21,6 +21,9 @@ PROVIDERS = {"codex": "Codex", "claude": "Claude"}
 STYLES = {"round": "동글 사슴", "antlers": "작은 뿔 사슴"}
 SIZES = (128, 160)
 DEFAULT_SIZE = 128
+RESOURCE_ROOT = (Path(sys._MEIPASS) if getattr(sys, "frozen", False)
+                 else Path(__file__).resolve().parents[1])
+VERSION = (RESOURCE_ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 class Tooltip:
@@ -78,9 +81,12 @@ class DeerWidget:
         self.canvas = tk.Canvas(self.root, highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
         self.images: dict[str, tuple[Image.Image, Image.Image]] = {}
-        self.value_font = ImageFont.truetype(str(Path(os.environ["WINDIR"]) / "Fonts" / "consolab.ttf"), 16)
+        try:
+            self.value_font = ImageFont.truetype(str(Path(os.environ["WINDIR"]) / "Fonts" / "consolab.ttf"), 16)
+        except OSError:
+            self.value_font = ImageFont.load_default(size=16)
         for style in STYLES:
-            with Image.open((Path(__file__).resolve().parents[1] if Path(__file__).parent.name == "src" else Path(__file__).parent) / "assets" / f"deer-{style}.png") as image:
+            with Image.open(RESOURCE_ROOT / "assets" / f"deer-{style}.png") as image:
                 color = image.convert("RGBA")
                 gray = ImageOps.grayscale(color).convert("RGBA")
                 gray.putalpha(color.getchannel("A"))
@@ -143,7 +149,12 @@ class DeerWidget:
 
     def _load_settings(self) -> None:
         try:
-            saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            settings_path = self.settings_path
+            if not getattr(self.args, "settings_path", None) and not settings_path.exists():
+                base = os.environ.get("LOCALAPPDATA")
+                settings_path = (Path(base) / "CodexQuotaWidgetPython" / "settings.json"
+                                 if base else Path.home() / ".codex-quota-widget-python" / "settings.json")
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
             if saved.get("style") in STYLES:
                 self.style = saved["style"]
             if saved.get("size") in SIZES:
@@ -301,7 +312,8 @@ def probe(codex_path: str | None, provider: str = "codex") -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Codex / Claude 5-hour quota deer widget")
+    parser = argparse.ArgumentParser(description="Quota Widget: Codex / Claude 5-hour quota deer widget")
+    parser.add_argument("--version", action="version", version=f"Quota Widget {VERSION}")
     parser.add_argument("--codex-path")
     parser.add_argument("--provider", choices=tuple(PROVIDERS))
     parser.add_argument("--settings-path")
